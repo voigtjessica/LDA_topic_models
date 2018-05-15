@@ -1,0 +1,219 @@
+---
+title: "LDA e find_topics"
+author: "Jessica Voigt"
+date: "15 de maio de 2018"
+output: html_document
+---
+
+# LDA e find_topics
+
+Esse documento registra como fazer um LDA e achar o número ideal de tópicos em um mesmo lugar. Para os scripts comentados, acesse os outros arquivos desse repositório. 
+
+Eu vou usar um documento contendo uma amostra dos pedidos de acesso à informação feitos para as prefeituras brasileiras. Caso queira ter acesso a basses completas, acesse o site do projeto [Achados e Pedidos](achadosepedidos.org.br). 
+
+load("amostra_legis.Rdata")
+
+### Iniciando a produção dos documentos:
+
+*Bibliotecas:*
+
+```{r, eval=F }
+library(dplyr)
+library(XML)
+library(tm)
+library(SnowballC)
+library(seqinr)
+library(RTextTools)
+library(topicmodels)
+library(data.table)
+library(devtools)
+# devtools::install_github("sfirke/janitor")
+library(janitor)
+# devtools::install_github("mgaldino/tbaep")
+library(tbaep)
+library(dplyr)
+library(googlesheets)
+```
+
+### Stopwords
+
+As stopwords são palavras frequentes que costumam aparecer nos documentos inspecionados. Elas variam de acordo com o contexto. Nesse caso, grande parte eram palavras ligadas ao cotidiano dos pedidos feitos via LAI "gostaria" "saber" "como" e palavras ligadas à câmara dos deputados que não eram importantes para saber o teor do pedido como "câmara" e "deputados" .
+
+Para saber as stopwords o ideal é rodar o LDA algumas vezes e ver quais palavras se destacam e ir acrescentando na sua planilha de stopwords. No meu caso, eu achei mais interessante criar um documento no Gdrive e ir inserindo manualmente.
+
+*Retirando acentos:*
+
+```{r, eval=F}
+base_legislativo_lda <- base_legislativo %>%
+  mutate(pedido = snakecase::to_any_case(pedido, case = "none",
+                                                    transliterations = c("Latin-ASCII")))
+```
+
+
+*Stopwords que eu editei no gdrive (pacote googlesheets)*
+
+```{r, eval=F}
+url_laistopwords <- "https://docs.google.com/spreadsheets/d/1s2FwjhzjSIKNR3oE0FjuL8McIihBL-Z9z8BVlH3JeG0/edit?usp=sharing" 
+gs_ls() 
+laistopwords_sheet <- gs_title("stopwords_lai")
+laistopwords <- laistopwords_sheet %>%
+  gs_read()
+colnames(laistopwords) = c("V1")
+```
+
+
+*Stopwords usuais para Pt-BR :*
+
+```{r, eval=F}
+pt_stop_words <- read.csv(url("http://raw.githubusercontent.com/stopwords-iso/stopwords-pt/master/stopwords-pt.txt"),
+                          encoding = "UTF-8", header = FALSE)
+
+```
+
+*Stopwords sem acento (para o caso de typos no pedido) :*
+
+OBS: no meu caso, eu já coloquei no gdrive nomes com e sem acento.
+
+```{r, eval=F}
+pt_stop_words2 <- data.frame(iconv(pt_stop_words$V1, from="UTF-8",to="ASCII//TRANSLIT")) 
+```
+
+*Deixando os dfs com o mesmo nome:*
+```{r, eval=F}
+colnames(pt_stop_words2) = c("V1")
+```
+
+*Juntando:*
+```{r, eval=F}
+pt_stopwordsfinal <- pt_stop_words %>%
+  rbind(pt_stop_words2) %>%
+  distinct(V1, .keep_all = TRUE) %>%
+  mutate(V1 = as.character(V1)) %>%
+  arrange(V1)
+
+my_stopwords <- unique(c(stopwords("portuguese"), pt_stopwordsfinal$V1, laistopwords$V1))
+
+```
+
+### Trabalhando com a base propriamente dita:
+
+```{r, eval = F}
+base_legislativo_lda <- base_legislativo_lda %>%
+  select(pedido) 
+```
+
+*Transforma DF em vetor*
+
+```{r, eval = F}
+base_legislativo_lda1 <- base_legislativo_lda$pedido 
+
+ped1 <- Corpus(VectorSource(base_legislativo_lda1)) 
+ped <- Corpus(VectorSource(base_legislativo_lda1)) 
+
+inspect(ped[15:18])
+
+ped <- tm_map(ped, content_transformer(tolower))
+ped <- tm_map(ped, removeNumbers)
+ped <- tm_map(ped, removePunctuation)
+f <- content_transformer(function(x, pattern) gsub("¿", "", x))
+ped <- tm_map(ped, f)
+ped <- tm_map(ped, removeWords, my_stopwords)
+ped <- tm_map(ped , stripWhitespace) 
+ped <- tm_map(ped, stemDocument, language = "portuguese")
+
+inspect(ped[15:18])
+
+```
+
+No chunk acima, eu crio o documento *ped1* para lá embaixo poder consultar os pedidos dentro de cada tópico. Já as linhas *inspect* antes e depois servem para eu ver se todas as transformações que eu fiz no ped aconteceram de fato.
+
+### Criando o dtm que será usado no LDA
+
+```{r, eval = F}
+dtm.control <- list(wordLengths = c(3,Inf),
+                    weighting = weightTf)
+dtm <- DocumentTermMatrix(ped, control = dtm.control)
+dim(dtm)
+inspect(dtm[1:20,1:20])
+freq_words <- rowSums(as.matrix(dtm))
+index <- which(freq_words==0)
+dtm1 <- dtm[-index, ]
+findFreqTerms(dtm1, 5)
+```
+
+Acima eu retiro do dtm os documentos que, depois das extrações, ficaram sem nenhuma palavra e crio o objeto *dtm1* . Se o dtm tiver algum documento em branco, ele não irá rodar. Se o dtm tiver documentos demais ele também não irá rodar. Nesses casos eu devo limitar o número de documentos na hora de gerar o vetor (n_sample ou algo assim).
+
+### Descobrindo o número de tópicos:
+
+Esse jeito de descobrir o número de tópicos envolve a comparação de quatro cálculos diferentes. Felizmente alguém já fez uma biblioteca pra isso :) . [Clique aqui] (cran.r-project.org/web/packages/ldatuning/vignettes/topics.html) para ver o CRAN da biblioteca.
+
+*Importante:* a definição do número de tópicos nunca é 100%. As vezes temos conjuntos de palavras que são usadas separadamente mas os documentos se referem às mesmas coisas. O ideal é usar o LDA + find_topics como uma ferramenta inicial para dar o start na caracterização dos tópicos em uma base
+
+```{r, eval = F}
+# install.packages("ldatuning")
+library(ldatuning)
+
+result <- FindTopicsNumber(
+  dtm1,
+  topics = seq(from = 2, to = 60, by = 5),
+  metrics = c("Griffiths2004", "CaoJuan2009", "Arun2010", "Deveaud2014"),
+  method = "Gibbs",
+  control = list(seed = 77),
+  mc.cores = 2L,
+  verbose = TRUE
+) 
+```
+
+*Plotando:*
+```{r, eval = F}
+
+FindTopicsNumber_plot(result)
+```
+
+### LDA:
+
+Agora que temos o número de tópicos ( k ), podemos fazer o LDA
+
+```{r, eval = F}
+set.seed(51)
+trainpoints <- sample(1:nrow(dtm1), 1*nrow(dtm1),replace=F) 
+
+k <- 10   
+
+SpecificTerms <- function(lda.model,n=1) {
+  p <- posterior(lda.model)$terms
+  n <- min(n,ncol(p))
+  cumulativep <- colSums(p)
+  specificp <- t(apply(p,1,function(x) ((x) + (x/cumulativep) )))
+  
+  topterms <- t(apply(specificp, 1, function(x)
+    (colnames(specificp)[order(x,decreasing=T)[1:n]]) ))
+  
+  topterms
+}
+
+set.seed(2)
+lda1 <- LDA(dtm1, k)
+
+```
+
+Agora vamos analisar o que conseguimos:
+
+```{r, eval = F}
+
+# t Termos mais prováveis por tópico
+t <- 10
+View(terms(lda1, t))
+
+# t termos com prob acima de minimo
+minimo <- .015
+terms(lda1, t, threshold=minimo)  
+
+# tópicos mais prováveis por documentos
+topics(lda1)
+
+# Para consultar documentos:
+inspect(ped1[101])
+```
+
+
