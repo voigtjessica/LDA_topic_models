@@ -1,0 +1,143 @@
+# Legislativo
+# A base já estava montada. Estou só registrando o procedimento do LDA.
+
+load("base_legislativo.Rdata")
+
+#iniciando a produção dos documentos:
+
+library(dplyr)
+library(XML)
+library(tm)
+library(SnowballC)
+library(seqinr)
+library(RTextTools)
+library(topicmodels)
+library(data.table)
+library(devtools)
+# devtools::install_github("sfirke/janitor")
+library(janitor)
+# devtools::install_github("mgaldino/tbaep")
+library(tbaep)
+library(dplyr)
+library(googlesheets)
+
+# As stopwords são palavras frequentes que costumam aparecer nos documentos inspecionados. Elas variam de acordo com o contexto. Nesse
+# caso, grande parte eram palavras ligadas ao cotidiano dos pedidos feitos via LAI "gostaria" "saber" "como" e palavras ligadas à câmara 
+# dos deputados que não eram importantes para saber o teor do pedido como "câmara" e "deputados" .
+
+# Para saber as stopwords o ideal é rodar o LDA algumas vezes e ver quais palavras se destacam e ir acrescentando na sua planilha
+# de stopwords. No meu caso, eu achei mais interessante criar um documento no Gdrive e ir inserindo manualmente.
+
+# Retirando acentos:
+
+base_legislativo_lda <- base_legislativo %>%
+  mutate(pedido = snakecase::to_any_case(pedido, case = "none",
+                                                    transliterations = c("Latin-ASCII")))
+
+
+# Stopwords que eu editei no gdrive (pacote googlesheets)
+
+url_laistopwords <- "https://docs.google.com/spreadsheets/d/1s2FwjhzjSIKNR3oE0FjuL8McIihBL-Z9z8BVlH3JeG0/edit?usp=sharing" 
+gs_ls() 
+laistopwords_sheet <- gs_title("stopwords_lai")
+laistopwords <- laistopwords_sheet %>%
+  gs_read()
+colnames(laistopwords) = c("V1")
+
+# Stopwords default para Pt-BR :
+
+pt_stop_words <- read.csv(url("http://raw.githubusercontent.com/stopwords-iso/stopwords-pt/master/stopwords-pt.txt"),
+                          encoding = "UTF-8", header = FALSE)
+
+# Stopwords sem acento (para o caso de typos no pedido) :
+# OBS: no meu caso, eu já coloquei no gdrive nomes com e sem acento.
+pt_stop_words2 <- data.frame(iconv(pt_stop_words$V1, from="UTF-8",to="ASCII//TRANSLIT")) 
+
+# Deixando os dfs com o mesmo nome: 
+colnames(pt_stop_words2) = c("V1")
+
+# Juntando:
+pt_stopwordsfinal <- pt_stop_words %>%
+  rbind(pt_stop_words2) %>%
+  distinct(V1, .keep_all = TRUE) %>%
+  mutate(V1 = as.character(V1)) %>%
+  arrange(V1)
+
+my_stopwords <- unique(c(stopwords("portuguese"), pt_stopwordsfinal$V1, laistopwords$V1))
+
+# Trabalhando com a base propriamente dita:
+
+base_legislativo_lda <- base_legislativo_lda %>%
+  select(pedido) 
+
+# transforma DF em vetor 
+base_legislativo_lda1 <- base_legislativo_lda$pedido 
+
+ped1 <- Corpus(VectorSource(base_legislativo_lda1)) # Esse eu usarei para a consulta dos pedidos dentro dos tópicos.
+ped <- Corpus(VectorSource(base_legislativo_lda1))  # Esse eu vou usar para rodar o LDA
+
+inspect(ped[15:18]) # Ver como está antes de rodar:
+
+ped <- tm_map(ped, content_transformer(tolower))
+ped <- tm_map(ped, removeNumbers)
+ped <- tm_map(ped, removePunctuation) #tira os pontos
+f <- content_transformer(function(x, pattern) gsub("¿", "", x))
+ped <- tm_map(ped, f)
+ped <- tm_map(ped, removeWords, my_stopwords) # demora um pouco
+ped <- tm_map(ped , stripWhitespace) #extrawhitespace
+ped <- tm_map(ped, stemDocument, language = "portuguese")
+
+inspect(ped[15:18]) # Ver como está depois de rodar, se retirou acento, maiúscula, etc.
+
+dtm.control <- list(wordLengths = c(3,Inf),
+                    weighting = weightTf)
+dtm <- DocumentTermMatrix(ped, control = dtm.control)
+dim(dtm)
+inspect(dtm[1:20,1:20])
+freq_words <- rowSums(as.matrix(dtm))       # Quantas palavras cada documento (linha) tem
+index <- which(freq_words==0)               # Índice de documentos em que não há palavras
+dtm1 <- dtm[-index, ]                       # Remove palavras que não ocorrem em nenhum documento.
+findFreqTerms(dtm1, 5)                      # Encontrando termos que ocorreram ao menos 5x
+
+
+# LDA:
+
+set.seed(51)
+trainpoints <- sample(1:nrow(dtm1), 1*nrow(dtm1),replace=F) # to train on a subsample, change 1.0 to a lower value, say 0.8
+
+# Número de tópicos definido no Topic Likelihood (ver outro script):
+k <- 10   
+
+# Função pra extrair termos:
+SpecificTerms <- function(lda.model,n=1) {
+  p <- posterior(lda.model)$terms
+  n <- min(n,ncol(p))
+  cumulativep <- colSums(p)
+  specificp <- t(apply(p,1,function(x) ((x) + (x/cumulativep) )))
+  
+  topterms <- t(apply(specificp, 1, function(x)
+    (colnames(specificp)[order(x,decreasing=T)[1:n]]) ))
+  
+  topterms
+}
+
+set.seed(2)
+
+# Rodando (finalmente) o LDA . 
+# O system.time dá a expectativa do tempo de demora
+system.time(lda1 <- LDA(dtm1, k))
+
+
+# t Termos mais prováveis por tópico
+t <- 10
+View(terms(lda1, t))
+
+# t termos com prob acima de minimo
+minimo <- .015
+terms(lda1, t, threshold=minimo)  
+
+# tópicos mais prováveis por documentos
+topics(lda1)
+
+# Para consultar documentos:
+inspect(ped1[101])
