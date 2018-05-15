@@ -210,10 +210,17 @@ minimo <- .015
 terms(lda1, t, threshold=minimo)  
 
 # tópicos mais prováveis por documentos
-topics(lda1)
+y <- as.data.frame(topics(lda3))
+sort(desc(table(y)))
+colnames(y) <- c("topicos")
+
+y %>%
+  filter(topicos == 7) %>%
+  sample_n(5)
 
 # Para consultar documentos:
 inspect(ped1[101])
+
 ```
 
 
