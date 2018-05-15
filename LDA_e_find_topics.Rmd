@@ -210,7 +210,7 @@ minimo <- .015
 terms(lda1, t, threshold=minimo)  
 
 # tópicos mais prováveis por documentos
-y <- as.data.frame(topics(lda3))
+y <- as.data.frame(topics(lda1))
 sort(desc(table(y)))
 colnames(y) <- c("topicos")
 
