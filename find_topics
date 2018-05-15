@@ -1,0 +1,24 @@
+# Jeito de conseguir achar o número ideal de tópicos
+# Origem: https://cran.r-project.org/web/packages/ldatuning/vignettes/topics.html
+
+# Importante: isso nunca é 100%. As vezes temos conjuntos de palavras que são usadas separadamente mas os documentos se referem às
+# mesmas coisas. O ideal é usar o LDA + find_topics como uma ferramenta inicial para dar o start na caracterização dos tópicos em uma base
+
+# install.packages("ldatuning")
+library(ldatuning)
+
+# Usar o dtm1 que eu gerei no LDA (outro script)
+
+result <- FindTopicsNumber(
+  dtm1,
+  topics = seq(from = 2, to = 60, by = 5),
+  metrics = c("Griffiths2004", "CaoJuan2009", "Arun2010", "Deveaud2014"),
+  method = "Gibbs",
+  control = list(seed = 77),
+  mc.cores = 2L,
+  verbose = TRUE
+) # demora um pouco
+
+#Plotando:
+
+FindTopicsNumber_plot(result)
